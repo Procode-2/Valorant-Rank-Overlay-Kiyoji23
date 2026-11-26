@@ -162,3 +162,27 @@ body {
     opacity: 0;
   }
 }
+    #startSessionButton {
+    position: absolute;
+    top: 130px;
+    left: 80px;
+    z-index: 10;
+    padding: 6px 14px;
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    border-radius: 7px;
+    background: #26364a;
+    color: #fff;
+    font-family: "Outfit", sans-serif;
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+#startSessionButton:hover {
+    background: #354b65;
+}
+
+#startSessionButton:disabled {
+    opacity: 0.7;
+    cursor: wait;
+}
