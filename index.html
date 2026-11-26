@@ -94,6 +94,12 @@
                 </div>
 
                 <label class="flex flex-col w-1/2 p-2 shrink">
+                    <div class="p-2 w-1/2 relative">
+                        <button id="startSessionButton" type="button" class="hidden text-center p-2 rounded-md w-full transition-all duration-300 grad-3 border border-slate-800 border-opacity-30">
+                            Start Session
+                        </button>
+                        <p id="sessionMessage" class="text-xs opacity-70 mt-2" aria-live="polite"></p>
+                    </div>
                     <p class="opacity-50">OBS Browser Copy Link:</p>
                     <input id="linkUrl" type="text" class="border-none"  placeholder="https://paste.on.obs/as/browser" readonly> 
                 </label>
