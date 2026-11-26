@@ -1,3 +1,4 @@
+
 const urlParams = new URLSearchParams(window.location.search);
 
 const config = {
@@ -11,6 +12,8 @@ const config = {
   icourl: urlParams.get("iu") || "",
   semWl: urlParams.has("swl"),
   apikey: urlParams.get("apikey") || "",
+  sessionStartMatchId: urlParams.get("sessionStartMatchId") || "",
+  sessionStartDateRaw: Number(urlParams.get("sessionStartDateRaw") || 0),
 };
 
 const dom = {
@@ -33,116 +36,71 @@ const state = {
   losses: 0,
   lastMatchId: null,
   processedMatchIds: new Set(),
-
   sessionRR: 0,
-  sessionStartMatchId: null,
-  sessionStartDateRaw: 0,
   processedRrMatchIds: new Set(),
-  sessionStarted: false,
+  sessionRrInitialized: false,
 };
 
-async function fetchMMRHistory() {
-  const encodedName = encodeURIComponent(config.nmusuario);
-  const encodedTag = encodeURIComponent(config.idusuario);
+const SESSION_CHANNEL_NAME = "valorant-session-control";
+let lastSessionEventId = null;
 
-  const json = await fetchJson(
-    `/v1/mmr-history/${config.regiao}/${encodedName}/${encodedTag}`
-  );
-
-  return Array.isArray(json?.data) ? json.data : [];
-}
-
-function renderSessionRR() {
-  const prefix = state.sessionRR > 0 ? "+" : "";
-
-  dom.ultimaPartida.innerHTML =
-    `Stream Progress: ${prefix}${state.sessionRR}rr`;
-}
-
-async function startSession() {
-  const button = document.getElementById("startSessionButton");
-
-  if (!button || state.sessionStarted) return;
-
-  button.disabled = true;
-  button.textContent = "Starting...";
-
-  try {
-    const history = await fetchMMRHistory();
-    const latestEntry = history[0];
-
-    state.sessionRR = 0;
-    state.processedRrMatchIds.clear();
-
-    state.sessionStartMatchId = latestEntry?.match_id || null;
-    state.sessionStartDateRaw = Number(latestEntry?.date_raw || 0);
-
-    if (state.sessionStartMatchId) {
-      state.processedRrMatchIds.add(state.sessionStartMatchId);
-    }
-
-    state.sessionStarted = true;
-
-    renderSessionRR();
-
-    button.style.display = "none";
-
-  } catch (error) {
-    console.error("Error starting session:", error);
-
-    button.disabled = false;
-    button.textContent = "Start Session";
+function applySessionBaseline(message) {
+  if (
+    !message ||
+    message.type !== "start-session" ||
+    !Number(message.dateRaw)
+  ) {
+    return;
   }
-}
 
-async function updateSessionRR() {
-  if (!state.sessionStarted) return;
+  if (message.eventId && message.eventId === lastSessionEventId) return;
+  lastSessionEventId = message.eventId || null;
 
-  const history = await fetchMMRHistory();
+  config.sessionStartMatchId = message.matchId || "";
+  config.sessionStartDateRaw = Number(message.dateRaw);
 
-  if (!history.length) return;
-
-  for (const entry of history) {
-    const matchId = entry?.match_id;
-
-    if (!matchId) continue;
-
-    // Stop when we reach the last match before the session.
-    if (matchId === state.sessionStartMatchId) break;
-
-    // Prevent duplicate matches.
-    if (state.processedRrMatchIds.has(matchId)) continue;
-
-    const matchDate = Number(entry.date_raw || 0);
-
-    if (
-      state.sessionStartDateRaw &&
-      matchDate &&
-      matchDate <= state.sessionStartDateRaw
-    ) {
-      continue;
-    }
-
-    state.sessionRR += Number(
-      entry.mmr_change_to_last_game || 0
-    );
-
-    state.processedRrMatchIds.add(matchId);
-  }
+  state.sessionStartMatchId = config.sessionStartMatchId;
+  state.sessionStartDateRaw = config.sessionStartDateRaw;
+  state.sessionRR = 0;
+  state.processedRrMatchIds.clear();
+  state.sessionRrInitialized = true;
 
   renderSessionRR();
+  updateSessionRR().catch((error) =>
+    console.error("Could not refresh Stream Progress after session reset:", error)
+  );
 }
+
+if ("BroadcastChannel" in window) {
+  const sessionChannel = new BroadcastChannel(SESSION_CHANNEL_NAME);
+  sessionChannel.addEventListener("message", (event) => {
+    applySessionBaseline(event.data);
+  });
+}
+
+window.addEventListener("storage", (event) => {
+  if (event.key !== "valorant-session-control" || !event.newValue) return;
+
+  try {
+    applySessionBaseline(JSON.parse(event.newValue));
+  } catch (error) {
+    console.error("Invalid session reset message:", error);
+  }
+});
 
 function buildApiUrl(path, queryParams = {}) {
   const url = new URL(`${API_BASE}${path}`);
+
   Object.entries(queryParams).forEach(([key, value]) => {
     if (value !== undefined && value !== null && value !== "") {
       url.searchParams.set(key, value);
     }
   });
+
   if (config.apikey) {
     url.searchParams.set("api_key", config.apikey);
   }
+
   return url.toString();
 }
 
@@ -197,6 +155,7 @@ async function fetchLeaderboardRank() {
     if (json.status === 404 || !Array.isArray(json.data) || !json.data[0]) {
       return null;
     }
+
     return json.data[0].leaderboardRank;
   } catch (error) {
     console.error("Erro ao buscar leaderboard:", error);
@@ -206,6 +165,7 @@ async function fetchLeaderboardRank() {
 
 function extractActSeasonData(bySeason = {}) {
   const preferredActs = ["e11a6", "e11aVI"];
+
   for (const act of preferredActs) {
     if (bySeason[act]) {
       return {
@@ -216,8 +176,10 @@ function extractActSeasonData(bySeason = {}) {
   }
 
   const seasonKeys = Object.keys(bySeason);
+
   if (seasonKeys.length > 0) {
     const latestSeason = bySeason[seasonKeys[seasonKeys.length - 1]];
+
     return {
       numberOfGames: latestSeason?.number_of_games ?? 0,
       hasNoData: Boolean(latestSeason?.error),
@@ -231,6 +193,7 @@ async function updateRank() {
   try {
     const encodedName = encodeURIComponent(config.nmusuario);
     const encodedTag = encodeURIComponent(config.idusuario);
+
     const json = await fetchJson(
       `/v2/mmr/${config.regiao}/${encodedName}/${encodedTag}`
     );
@@ -240,6 +203,7 @@ async function updateRank() {
     }
 
     const current = json.data.current_data;
+
     if (current.currenttier === null && !current.games_needed_for_rating) {
       return;
     }
@@ -247,6 +211,7 @@ async function updateRank() {
     const { numberOfGames, hasNoData } = extractActSeasonData(
       json.data.by_season
     );
+
     const gamesNeeded = Number(current.games_needed_for_rating ?? 0);
     const isUnranked =
       numberOfGames < 1 || (hasNoData && gamesNeeded >= 1);
@@ -272,6 +237,7 @@ async function updateRank() {
       dom.headerRank.innerHTML = eloText;
     } else if (tier === 27) {
       const lbRank = await fetchLeaderboardRank();
+
       dom.headerRank.innerHTML = lbRank
         ? `${eloText} #${lbRank}`
         : `${eloText} ${rrText}RR`;
@@ -283,22 +249,18 @@ async function updateRank() {
     dom.mmrAtual.innerHTML = rr;
 
     if (isUnranked) {
-  dom.ultimaPartida.innerHTML = `Unranked ${gamesPlayedInAct}/5`;
-} else {
-  if (state.sessionStarted) {
-    renderSessionRR();
-  }
-
-  if (tier >= 24) {
-    if (lastMmrChange === 0) {
-      dom.ultMmr.style.backgroundColor = "grey";
-    } else if (lastMmrChange >= 1) {
-      progressPercent = "100%";
-    } else if (lastMmrChange <= -1) {
-      progressPercent = "0%";
+      dom.ultimaPartida.innerHTML = `Unranked ${gamesPlayedInAct}/5`;
+    } else if (tier >= 24) {
+      if (lastMmrChange === 0) {
+        dom.ultMmr.style.backgroundColor = "grey";
+      } else if (lastMmrChange >= 1) {
+        progressPercent = "100%";
+      } else if (lastMmrChange <= -1) {
+        progressPercent = "0%";
+      }
+    } else {
+      // Stream Progress is rendered by the session tracker below.
     }
-  }
-}
 
     dom.rootStyle.setProperty("--progresspontinho", progressPercent);
 
@@ -319,6 +281,7 @@ function renderWinLoss() {
 async function fetchPuuid() {
   const encodedName = encodeURIComponent(config.nmusuario);
   const encodedTag = encodeURIComponent(config.idusuario);
+
   const json = await fetchJson(`/v1/account/${encodedName}/${encodedTag}`);
   state.puuid = json?.data?.puuid || null;
 }
@@ -326,17 +289,85 @@ async function fetchPuuid() {
 async function fetchLatestCompetitiveMatch() {
   const encodedName = encodeURIComponent(config.nmusuario);
   const encodedTag = encodeURIComponent(config.idusuario);
+
   const json = await fetchJson(
     `/v3/matches/${config.regiao}/${encodedName}/${encodedTag}`,
     { mode: "competitive", size: 1 }
   );
+
   return json?.data?.[0] || null;
+}
+
+async function fetchMMRHistory() {
+  const encodedName = encodeURIComponent(config.nmusuario);
+  const encodedTag = encodeURIComponent(config.idusuario);
+
+  const json = await fetchJson(
+    `/v1/mmr-history/${config.regiao}/${encodedName}/${encodedTag}`
+  );
+
+  return Array.isArray(json?.data) ? json.data : [];
+}
+
+function renderSessionRR() {
+  if (!config.sessionStartDateRaw) {
+    dom.ultimaPartida.innerHTML = "Stream Progress: Start Session on setup page";
+    return;
+  }
+
+  const prefix = state.sessionRR > 0 ? "+" : "";
+  dom.ultimaPartida.innerHTML =
+    `Stream Progress: ${prefix}${state.sessionRR}rr`;
+}
+
+async function initializeSessionRR() {
+  state.sessionStartMatchId = config.sessionStartMatchId;
+  state.sessionStartDateRaw = config.sessionStartDateRaw;
+  state.sessionRR = 0;
+  state.processedRrMatchIds.clear();
+  state.sessionRrInitialized = true;
+
+  renderSessionRR();
+}
+
+async function updateSessionRR() {
+  if (!state.sessionRrInitialized || !state.sessionStartDateRaw) {
+    return;
+  }
+
+  const history = await fetchMMRHistory();
+
+  if (!history.length) return;
+
+  for (const entry of history) {
+    const matchId = entry?.match_id;
+
+    if (!matchId) continue;
+
+    if (state.sessionStartMatchId && matchId === state.sessionStartMatchId) {
+      break;
+    }
+
+    if (state.processedRrMatchIds.has(matchId)) continue;
+
+    const matchDate = Number(entry.date_raw || 0);
+
+    if (!matchDate || matchDate <= state.sessionStartDateRaw) {
+      continue;
+    }
+
+    state.sessionRR += Number(entry.mmr_change_to_last_game || 0);
+    state.processedRrMatchIds.add(matchId);
+  }
+
+  renderSessionRR();
 }
 
 function evaluateMatchOutcome(match) {
   const player = match?.players?.all_players?.find(
     (p) => p.puuid === state.puuid
   );
+
   if (!player?.team) return null;
 
   const teamKey = player.team.toLowerCase();
@@ -352,6 +383,7 @@ async function checkWinLoss() {
   try {
     const match = await fetchLatestCompetitiveMatch();
     const matchId = match?.metadata?.matchid;
+
     if (!matchId || state.processedMatchIds.has(matchId)) {
       renderWinLoss();
       return;
@@ -361,12 +393,14 @@ async function checkWinLoss() {
 
     if (state.lastMatchId && matchId !== state.lastMatchId) {
       const outcome = evaluateMatchOutcome(match);
+
       if (outcome) {
         if (outcome.teamWon) {
           state.wins += 1;
         } else if (!outcome.isDraw) {
           state.losses += 1;
         }
+
         state.lastMatchId = matchId;
       }
     } else if (!state.lastMatchId) {
@@ -382,7 +416,6 @@ async function checkWinLoss() {
 async function initWinLossTracking() {
   renderWinLoss();
 
-  // Win/Loss tracking remains optional.
   if (!config.semWl) {
     try {
       await fetchPuuid();
@@ -396,23 +429,26 @@ async function initWinLossTracking() {
       }
 
       setInterval(checkWinLoss, 30000);
-
     } catch (error) {
-      console.error("Error initializing Win/Loss:", error);
+      console.error("Erro ao iniciar Win/Loss:", error);
     }
   }
 
-  // Start Session button.
-  const startButton = document.getElementById("startSessionButton");
+  if (config.sessionStartDateRaw) {
+    await initializeSessionRR();
 
-  startButton?.addEventListener("click", startSession);
-
-  // Check for new competitive matches every 30 seconds.
-  setInterval(() => {
-    updateSessionRR().catch(error =>
-      console.error("Error updating Stream Progress:", error)
+    updateSessionRR().catch((error) =>
+      console.error("Erro ao atualizar Stream Progress:", error)
     );
-  }, 30000);
+
+    setInterval(() => {
+      updateSessionRR().catch((error) =>
+        console.error("Erro ao atualizar Stream Progress:", error)
+      );
+    }, 30000);
+  } else {
+    renderSessionRR();
+  }
 }
 
 function checkLoadingStuck() {
