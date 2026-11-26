@@ -33,7 +33,105 @@ const state = {
   losses: 0,
   lastMatchId: null,
   processedMatchIds: new Set(),
+
+  sessionRR: 0,
+  sessionStartMatchId: null,
+  sessionStartDateRaw: 0,
+  processedRrMatchIds: new Set(),
+  sessionStarted: false,
 };
+
+async function fetchMMRHistory() {
+  const encodedName = encodeURIComponent(config.nmusuario);
+  const encodedTag = encodeURIComponent(config.idusuario);
+
+  const json = await fetchJson(
+    `/v1/mmr-history/${config.regiao}/${encodedName}/${encodedTag}`
+  );
+
+  return Array.isArray(json?.data) ? json.data : [];
+}
+
+function renderSessionRR() {
+  const prefix = state.sessionRR > 0 ? "+" : "";
+
+  dom.ultimaPartida.innerHTML =
+    `Stream Progress: ${prefix}${state.sessionRR}rr`;
+}
+
+async function startSession() {
+  const button = document.getElementById("startSessionButton");
+
+  if (!button || state.sessionStarted) return;
+
+  button.disabled = true;
+  button.textContent = "Starting...";
+
+  try {
+    const history = await fetchMMRHistory();
+    const latestEntry = history[0];
+
+    state.sessionRR = 0;
+    state.processedRrMatchIds.clear();
+
+    state.sessionStartMatchId = latestEntry?.match_id || null;
+    state.sessionStartDateRaw = Number(latestEntry?.date_raw || 0);
+
+    if (state.sessionStartMatchId) {
+      state.processedRrMatchIds.add(state.sessionStartMatchId);
+    }
+
+    state.sessionStarted = true;
+
+    renderSessionRR();
+
+    button.style.display = "none";
+
+  } catch (error) {
+    console.error("Error starting session:", error);
+
+    button.disabled = false;
+    button.textContent = "Start Session";
+  }
+}
+
+async function updateSessionRR() {
+  if (!state.sessionStarted) return;
+
+  const history = await fetchMMRHistory();
+
+  if (!history.length) return;
+
+  for (const entry of history) {
+    const matchId = entry?.match_id;
+
+    if (!matchId) continue;
+
+    // Stop when we reach the last match before the session.
+    if (matchId === state.sessionStartMatchId) break;
+
+    // Prevent duplicate matches.
+    if (state.processedRrMatchIds.has(matchId)) continue;
+
+    const matchDate = Number(entry.date_raw || 0);
+
+    if (
+      state.sessionStartDateRaw &&
+      matchDate &&
+      matchDate <= state.sessionStartDateRaw
+    ) {
+      continue;
+    }
+
+    state.sessionRR += Number(
+      entry.mmr_change_to_last_game || 0
+    );
+
+    state.processedRrMatchIds.add(matchId);
+  }
+
+  renderSessionRR();
+}
 
 function buildApiUrl(path, queryParams = {}) {
   const url = new URL(`${API_BASE}${path}`);
@@ -185,20 +283,22 @@ async function updateRank() {
     dom.mmrAtual.innerHTML = rr;
 
     if (isUnranked) {
-      dom.ultimaPartida.innerHTML = `Unranked ${gamesPlayedInAct}/5`;
-    } else if (tier >= 24) {
-      dom.ultimaPartida.innerHTML = `Last Match: ${lastMmrChange}pts`;
-      if (lastMmrChange === 0) {
-        dom.ultMmr.style.backgroundColor = "grey";
-      } else if (lastMmrChange >= 1) {
-        progressPercent = "100%";
-      } else if (lastMmrChange <= -1) {
-        progressPercent = "0%";
-      }
-    } else {
-      const prefix = lastMmrChange >= 1 ? "+ " : "";
-      dom.ultimaPartida.innerHTML = `Last Match: ${prefix}${lastMmrChange}pts`;
+  dom.ultimaPartida.innerHTML = `Unranked ${gamesPlayedInAct}/5`;
+} else {
+  if (state.sessionStarted) {
+    renderSessionRR();
+  }
+
+  if (tier >= 24) {
+    if (lastMmrChange === 0) {
+      dom.ultMmr.style.backgroundColor = "grey";
+    } else if (lastMmrChange >= 1) {
+      progressPercent = "100%";
+    } else if (lastMmrChange <= -1) {
+      progressPercent = "0%";
     }
+  }
+}
 
     dom.rootStyle.setProperty("--progresspontinho", progressPercent);
 
@@ -280,21 +380,39 @@ async function checkWinLoss() {
 }
 
 async function initWinLossTracking() {
-  if (config.semWl) return;
+  renderWinLoss();
 
-  try {
-    renderWinLoss();
-    await fetchPuuid();
-    const firstMatch = await fetchLatestCompetitiveMatch();
-    const firstMatchId = firstMatch?.metadata?.matchid;
-    if (firstMatchId) {
-      state.lastMatchId = firstMatchId;
-      state.processedMatchIds.add(firstMatchId);
+  // Win/Loss tracking remains optional.
+  if (!config.semWl) {
+    try {
+      await fetchPuuid();
+
+      const firstMatch = await fetchLatestCompetitiveMatch();
+      const firstMatchId = firstMatch?.metadata?.matchid;
+
+      if (firstMatchId) {
+        state.lastMatchId = firstMatchId;
+        state.processedMatchIds.add(firstMatchId);
+      }
+
+      setInterval(checkWinLoss, 30000);
+
+    } catch (error) {
+      console.error("Error initializing Win/Loss:", error);
     }
-    setInterval(checkWinLoss, 30000);
-  } catch (error) {
-    console.error("Erro ao iniciar Win/Loss:", error);
   }
+
+  // Start Session button.
+  const startButton = document.getElementById("startSessionButton");
+
+  startButton?.addEventListener("click", startSession);
+
+  // Check for new competitive matches every 30 seconds.
+  setInterval(() => {
+    updateSessionRR().catch(error =>
+      console.error("Error updating Stream Progress:", error)
+    );
+  }, 30000);
 }
 
 function checkLoadingStuck() {
