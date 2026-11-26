@@ -146,8 +146,10 @@ function changes() {
             }
 
             frame.classList.remove("hidden");
-            frame.src = copyText.value =
-                window.location.origin + "/v2/main.html?" + params;
+            const overlayUrl = new URL("./v2/main.html", window.location.href);
+            overlayUrl.search = params;
+
+            frame.src = copyText.value = overlayUrl.toString();
 
             console.log("update");
             return;
